@@ -52,48 +52,65 @@ router.get('/api/weather/:lat/:long', async function (req, res, next) {
 // =======================================================================
 router.get('/api/monitoringdata', async function (req, res, next) {
   const data = {
-    container: false,
+    container: fs.existsSync('/.dockerenv'),
     memUsedBytes: 0,
-    memTotalBytes: 0,
+    memTotalBytes: os.totalmem(),
     memAppUsedBytes: 0,
+    memProcUsedBytes: process.memoryUsage().rss,
     cpuAppPercentage: 0,
   }
 
-  // Gather monitoring data
   try {
-    // MEMORY
-    if (fs.existsSync('/.dockerenv')) {
-      data.container = true
+    // MEMORY: support both cgroup v1 and cgroup v2
+    if (data.container) {
+      const memoryFiles = [
+        {
+          usage: '/sys/fs/cgroup/memory.current',
+          limit: '/sys/fs/cgroup/memory.max',
+        },
+        {
+          usage: '/sys/fs/cgroup/memory/memory.usage_in_bytes',
+          limit: '/sys/fs/cgroup/memory/memory.limit_in_bytes',
+        },
+      ]
 
-      // Read cgroup container memory info
-      data.memUsedBytes = parseInt(fs.readFileSync('/sys/fs/cgroup/memory/memory.usage_in_bytes', 'utf8'))
-      data.memTotalBytes = parseInt(fs.readFileSync('/sys/fs/cgroup/memory/memory.limit_in_bytes', 'utf8'))
+      for (const files of memoryFiles) {
+        if (fs.existsSync(files.usage) && fs.existsSync(files.limit)) {
+          const usage = fs.readFileSync(files.usage, 'utf8').trim()
+          const limit = fs.readFileSync(files.limit, 'utf8').trim()
 
-      // limit_in_bytes might not be set, in which case it contains some HUGE number
-      // Fall back to using os.totalmem()
-      if (data.memTotalBytes > 90000000000000) {
-        data.memTotalBytes = os.totalmem()
+          data.memUsedBytes = parseInt(usage, 10)
+
+          // cgroup v2 uses "max" when no memory limit is configured
+          data.memTotalBytes =
+            limit === 'max' || parseInt(limit, 10) > 90000000000000
+              ? os.totalmem()
+              : parseInt(limit, 10)
+
+          break
+        }
       }
     } else {
-      data.free = os.freemem()
       data.memUsedBytes = os.totalmem() - os.freemem()
-      data.memTotalBytes = os.totalmem()
     }
-    data.memProcUsedBytes = process.memoryUsage().rss
 
-    // CPU
+    // CPU usage over a one-second interval
     const startUsage = process.cpuUsage()
     const D_TIME = 1000
-    // pause
-    const timeout = (ms) => new Promise((res) => setTimeout(res, ms))
-    await timeout(D_TIME)
-    // Get results/delta
+
+    await new Promise((resolve) => setTimeout(resolve, D_TIME))
+
     const cpuResult = process.cpuUsage(startUsage)
     data.cpuAppPercentage = (cpuResult.user / 1000 / D_TIME) * 100
 
     return res.status(200).send(data)
   } catch (e) {
-    return res.status(500).send({ error: true, title: 'Monitoring API error', message: e.toString() })
+    console.error('Monitoring API error:', e)
+    return res.status(500).send({
+      error: true,
+      title: 'Monitoring API error',
+      message: e.toString(),
+    })
   }
 })
 
