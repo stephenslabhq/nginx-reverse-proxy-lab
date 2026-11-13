@@ -1,0 +1,35 @@
+# Architecture
+
+## 1. Overview
+
+The solution uses Nginx as the entry point for client traffic, routing requests to separate backend applications based on the requested URL path.
+
+The initial implementation consists of three services:
+
+- Nginx: Reverse proxy and central entry point.
+- Node.js: Web application serving the homepage.
+- Python FastAPI: Backend API service.
+
+The services run as separate Docker containers and communicate over a private Docker network.
+
+Only Nginx publishes ports to the host. The backend applications are not directly exposed.
+
+## 2. Architecture Diagram
+
+```mermaid
+flowchart TD
+    Client[Client / Browser]
+
+    subgraph Docker["Docker Environment"]
+        Nginx["Nginx Reverse Proxy"]
+
+        subgraph PrivateNetwork["Private Docker Network"]
+            Web["Node.js Web Application"]
+            API["Python FastAPI Service"]
+        end
+
+        Nginx -->|"/"| Web
+        Nginx -->|"/api/"| API
+    end
+
+    Client -->|"HTTP / HTTPS"| Nginx

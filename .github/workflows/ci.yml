@@ -1,0 +1,125 @@
+name: Nginx Reverse Proxy CI/CD
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/nodejs-demoapp
+
+jobs:
+  test:
+    name: Build and test application
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build application
+        run: docker compose build web
+
+      - name: Start services
+        run: docker compose up -d
+
+      - name: Wait for services
+        run: |
+          for i in {1..30}; do
+            if [ "$(docker inspect --format='{{.State.Health.Status}}' nodejs-demoapp)" = "healthy" ] && \
+               [ "$(docker inspect --format='{{.State.Health.Status}}' nginx-proxy)" = "healthy" ]; then
+              echo "Both services are healthy."
+              exit 0
+            fi
+            echo "Waiting for services..."
+            sleep 5
+          done
+
+          docker compose ps
+          docker compose logs
+          exit 1
+
+      - name: Test application through Nginx
+        run: |
+          set -e
+
+          curl --fail --silent http://localhost:8080/ -o /dev/null
+          echo "Homepage passed"
+
+          curl --fail --silent http://localhost:8080/info -o /dev/null
+          echo "Info page passed"
+
+          curl --fail --silent http://localhost:8080/tools -o /dev/null
+          echo "Tools page passed"
+
+          curl --fail --silent http://localhost:8080/api/monitoringdata -o /dev/null
+          echo "Monitoring API passed"
+
+      - name: Verify security headers
+        run: |
+          headers=$(curl --fail --silent --head http://localhost:8080/)
+
+          echo "$headers" | grep -qi "X-Content-Type-Options: nosniff"
+          echo "$headers" | grep -qi "X-Frame-Options: SAMEORIGIN"
+          echo "$headers" | grep -qi "Referrer-Policy: strict-origin-when-cross-origin"
+
+          echo "Security headers verified"
+
+      - name: Verify backend is not publicly exposed
+        run: |
+          if curl --silent --connect-timeout 3 http://localhost:3000/; then
+            echo "ERROR: Backend is unexpectedly exposed."
+            exit 1
+          fi
+
+          echo "Backend isolation verified"
+
+      - name: Show service status
+        if: always()
+        run: docker compose ps
+
+      - name: Collect logs
+        if: failure()
+        run: docker compose logs
+
+      - name: Stop services
+        if: always()
+        run: docker compose down
+
+  publish:
+    name: Publish image to GHCR
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./services/web
+          file: ./services/web/build/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ env.IMAGE_NAME }}:latest
