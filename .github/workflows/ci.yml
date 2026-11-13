@@ -59,7 +59,7 @@ jobs:
           curl --fail --silent http://localhost:8080/tools -o /dev/null
           echo "Tools page passed"
 
-          curl --fail --silent http://localhost:8080/api/monitoringdata -o /dev/null
+          curl --show-error --include --fail http://localhost:8080/api/monitoringdata
           echo "Monitoring API passed"
 
       - name: Verify security headers
